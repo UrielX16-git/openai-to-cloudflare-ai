@@ -220,6 +220,15 @@ export default {
       }
 
       // Build the OpenAI-compatible response
+      // Some models (e.g. Nemotron) already return OpenAI-compatible format
+      if (result?.choices?.[0]?.message?.content !== undefined) {
+        // Already in OpenAI format — pass through with CORS headers
+        return new Response(JSON.stringify(result), {
+          headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
+        });
+      }
+
+      // For models that return { response: "..." } (e.g. Llama, Mistral)
       const responseContent = extractContent(result);
       const openAIResponse = {
         id: responseId,
