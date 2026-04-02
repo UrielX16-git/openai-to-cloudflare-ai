@@ -9,6 +9,7 @@ export interface Env {
       }
     ) => Promise<any>;
   };
+  API_KEY?: string; // Optional: if set, requires Bearer token auth
 }
 
 // Default model when none is specified in the request
@@ -48,13 +49,37 @@ export default {
       return new Response(null, { headers: CORS_HEADERS });
     }
 
-    // GET / → health check / info endpoint
+    // --- Authentication ---
+    // If API_KEY is configured in Cloudflare, require Bearer token on all POST requests
+    if (env.API_KEY && request.method === 'POST') {
+      const authHeader = request.headers.get('Authorization') || '';
+      const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+
+      if (token !== env.API_KEY) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              message: 'Invalid API key. Provide a valid key via Authorization: Bearer <key>',
+              type: 'authentication_error',
+              code: 'invalid_api_key',
+            },
+          }),
+          {
+            status: 401,
+            headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
+          }
+        );
+      }
+    }
+
+    // GET / → health check / info endpoint (always public)
     if (request.method === 'GET' && (url.pathname === '/' || url.pathname === '/v1/models')) {
       return new Response(
         JSON.stringify({
           status: 'ok',
           service: 'OpenAI-Compatible Cloudflare AI Proxy',
           default_model: DEFAULT_MODEL,
+          auth_required: !!env.API_KEY,
           endpoints: {
             chat: 'POST / or POST /v1/chat/completions',
             health: 'GET /',
