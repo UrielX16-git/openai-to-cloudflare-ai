@@ -1,4 +1,4 @@
-name = "openai-cf-proxy"
+name = 'openai-to-cloudflare-ai'
 compatibility_date = "2024-01-01"
 main = "src/index.tsx"
 
