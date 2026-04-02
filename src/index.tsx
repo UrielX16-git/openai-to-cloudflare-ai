@@ -50,8 +50,13 @@ export default {
     }
 
     // --- Authentication ---
-    // If API_KEY is configured in Cloudflare, require Bearer token on all POST requests
-    if (env.API_KEY && request.method === 'POST') {
+    // If API_KEY is configured, require Bearer token on POST and protected GET endpoints
+    const protectedGetPaths = ['/v1/models', '/models'];
+    const needsAuth =
+      request.method === 'POST' ||
+      (request.method === 'GET' && protectedGetPaths.includes(url.pathname));
+
+    if (env.API_KEY && needsAuth) {
       const authHeader = request.headers.get('Authorization') || '';
       const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
 
@@ -72,8 +77,8 @@ export default {
       }
     }
 
-    // GET / → health check / info endpoint (always public)
-    if (request.method === 'GET' && (url.pathname === '/' || url.pathname === '/v1/models')) {
+    // GET / → health check (always public)
+    if (request.method === 'GET' && url.pathname === '/') {
       return new Response(
         JSON.stringify({
           status: 'ok',
@@ -81,10 +86,42 @@ export default {
           default_model: DEFAULT_MODEL,
           auth_required: !!env.API_KEY,
           endpoints: {
-            chat: 'POST / or POST /v1/chat/completions',
+            chat: 'POST /v1/chat/completions',
+            models: 'GET /v1/models',
             health: 'GET /',
-            debug: 'POST /debug (returns raw AI response)',
+            debug: 'POST /debug',
           },
+        }),
+        {
+          headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
+        }
+      );
+    }
+
+    // GET /v1/models or /models → OpenAI-compatible model list
+    if (request.method === 'GET' && protectedGetPaths.includes(url.pathname)) {
+      const created = Math.floor(Date.now() / 1000);
+      const models = [
+        '@cf/nvidia/nemotron-3-120b-a12b',
+        '@cf/meta/llama-3-8b-instruct',
+        '@cf/meta/llama-3.1-8b-instruct',
+        '@cf/meta/llama-3.2-3b-instruct',
+        '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
+        '@cf/mistral/mistral-7b-instruct-v0.1',
+        '@cf/google/gemma-7b-it',
+        '@cf/qwen/qwen1.5-14b-chat-awq',
+        '@cf/deepseek/deepseek-r1-distill-qwen-32b',
+      ];
+
+      return new Response(
+        JSON.stringify({
+          object: 'list',
+          data: models.map((id) => ({
+            id,
+            object: 'model',
+            created,
+            owned_by: 'cloudflare',
+          })),
         }),
         {
           headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
