@@ -44,6 +44,11 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
+    // Normalize pathname: remove duplicate /v1 prefix and trailing slashes
+    // This fixes clients (like n8n) that set baseURL to .../v1 and then call /v1/models → /v1/v1/models
+    let pathname = url.pathname.replace(/\/+$/, '') || '/';
+    pathname = pathname.replace(/^\/v1\/v1\//, '/v1/');
+
     // Handle CORS preflight
     if (request.method === 'OPTIONS') {
       return new Response(null, { headers: CORS_HEADERS });
@@ -54,7 +59,7 @@ export default {
     const protectedGetPaths = ['/v1/models', '/models'];
     const needsAuth =
       request.method === 'POST' ||
-      (request.method === 'GET' && protectedGetPaths.includes(url.pathname));
+      (request.method === 'GET' && protectedGetPaths.includes(pathname));
 
     if (env.API_KEY && needsAuth) {
       const authHeader = request.headers.get('Authorization') || '';
@@ -78,7 +83,7 @@ export default {
     }
 
     // GET / → health check (always public)
-    if (request.method === 'GET' && url.pathname === '/') {
+    if (request.method === 'GET' && pathname === '/') {
       return new Response(
         JSON.stringify({
           status: 'ok',
@@ -99,7 +104,7 @@ export default {
     }
 
     // GET /v1/models or /models → OpenAI-compatible model list
-    if (request.method === 'GET' && protectedGetPaths.includes(url.pathname)) {
+    if (request.method === 'GET' && protectedGetPaths.includes(pathname)) {
       const created = Math.floor(Date.now() / 1000);
       const models = [
         '@cf/nvidia/nemotron-3-120b-a12b',
@@ -131,9 +136,9 @@ export default {
 
     // Accept POST on / , /v1/chat/completions, or /chat/completions
     const validPaths = ['/', '/v1/chat/completions', '/chat/completions'];
-    const isDebug = url.pathname === '/debug';
+    const isDebug = pathname === '/debug' || pathname === '/v1/debug';
 
-    if (request.method !== 'POST' || (!validPaths.includes(url.pathname) && !isDebug)) {
+    if (request.method !== 'POST' || (!validPaths.includes(pathname) && !isDebug)) {
       return new Response(
         JSON.stringify({ error: { message: 'Not found', type: 'invalid_request_error' } }),
         { status: 404, headers: { 'Content-Type': 'application/json', ...CORS_HEADERS } }
