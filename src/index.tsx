@@ -19,25 +19,63 @@ function generateId(): string {
   return 'chatcmpl-' + crypto.randomUUID().replace(/-/g, '').slice(0, 24);
 }
 
+// Helper: extract text content from diverse AI response shapes
+function extractContent(result: any): string {
+  if (typeof result === 'string') return result;
+  if (result?.response) return result.response;
+  if (result?.result) return typeof result.result === 'string' ? result.result : JSON.stringify(result.result);
+  if (result?.content) return result.content;
+  if (result?.text) return result.text;
+  if (result?.output) return typeof result.output === 'string' ? result.output : JSON.stringify(result.output);
+  if (result?.choices?.[0]?.message?.content) return result.choices[0].message.content;
+  // Last resort: stringify the whole object
+  return JSON.stringify(result);
+}
+
+// Common CORS headers
+const CORS_HEADERS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+};
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    const url = new URL(request.url);
+
     // Handle CORS preflight
     if (request.method === 'OPTIONS') {
-      return new Response(null, {
-        headers: {
-          'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Methods': 'POST, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-        },
-      });
+      return new Response(null, { headers: CORS_HEADERS });
     }
 
-    // Only accept POST requests
-    if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
-        status: 405,
-        headers: { 'Content-Type': 'application/json' },
-      });
+    // GET / → health check / info endpoint
+    if (request.method === 'GET' && (url.pathname === '/' || url.pathname === '/v1/models')) {
+      return new Response(
+        JSON.stringify({
+          status: 'ok',
+          service: 'OpenAI-Compatible Cloudflare AI Proxy',
+          default_model: DEFAULT_MODEL,
+          endpoints: {
+            chat: 'POST / or POST /v1/chat/completions',
+            health: 'GET /',
+            debug: 'POST /debug (returns raw AI response)',
+          },
+        }),
+        {
+          headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
+        }
+      );
+    }
+
+    // Accept POST on / , /v1/chat/completions, or /chat/completions
+    const validPaths = ['/', '/v1/chat/completions', '/chat/completions'];
+    const isDebug = url.pathname === '/debug';
+
+    if (request.method !== 'POST' || (!validPaths.includes(url.pathname) && !isDebug)) {
+      return new Response(
+        JSON.stringify({ error: { message: 'Not found', type: 'invalid_request_error' } }),
+        { status: 404, headers: { 'Content-Type': 'application/json', ...CORS_HEADERS } }
+      );
     }
 
     try {
@@ -58,10 +96,7 @@ export default {
               type: 'invalid_request_error',
             },
           }),
-          {
-            status: 400,
-            headers: { 'Content-Type': 'application/json' },
-          }
+          { status: 400, headers: { 'Content-Type': 'application/json', ...CORS_HEADERS } }
         );
       }
 
@@ -71,7 +106,7 @@ export default {
         content: msg.content,
       }));
 
-      // Determine which model to use: prefer request model, fallback to default
+      // Determine which model to use
       const modelToRun = requestData.model || DEFAULT_MODEL;
       const responseId = generateId();
       const created = Math.floor(Date.now() / 1000);
@@ -83,7 +118,6 @@ export default {
           stream: true,
         });
 
-        // If the AI returns a ReadableStream, pipe it through as SSE
         if (stream instanceof ReadableStream) {
           const { readable, writable } = new TransformStream();
           const writer = writable.getWriter();
@@ -98,12 +132,12 @@ export default {
                 if (done) break;
 
                 const text = decoder.decode(value, { stream: true });
-                // Parse SSE lines from Cloudflare AI
                 const lines = text.split('\n');
                 for (const line of lines) {
                   if (line.startsWith('data: ') && line.trim() !== 'data: [DONE]') {
                     try {
                       const data = JSON.parse(line.slice(6));
+                      const chunkContent = data.response || data.content || data.text || '';
                       const chunk = {
                         id: responseId,
                         object: 'chat.completion.chunk',
@@ -112,7 +146,7 @@ export default {
                         choices: [
                           {
                             index: 0,
-                            delta: { content: data.response || '' },
+                            delta: { content: chunkContent },
                             finish_reason: null,
                           },
                         ],
@@ -124,18 +158,13 @@ export default {
                       // Skip malformed JSON lines
                     }
                   } else if (line.trim() === 'data: [DONE]') {
-                    // Send the final chunk with finish_reason
                     const finalChunk = {
                       id: responseId,
                       object: 'chat.completion.chunk',
                       created,
                       model: modelToRun,
                       choices: [
-                        {
-                          index: 0,
-                          delta: {},
-                          finish_reason: 'stop',
-                        },
+                        { index: 0, delta: {}, finish_reason: 'stop' },
                       ],
                     };
                     await writer.write(
@@ -145,7 +174,7 @@ export default {
                   }
                 }
               }
-            } catch (err) {
+            } catch {
               // Silently close on error
             } finally {
               await writer.close();
@@ -157,7 +186,7 @@ export default {
               'Content-Type': 'text/event-stream',
               'Cache-Control': 'no-cache',
               Connection: 'keep-alive',
-              'Access-Control-Allow-Origin': '*',
+              ...CORS_HEADERS,
             },
           });
         }
@@ -166,26 +195,32 @@ export default {
       // --- Non-streaming mode ---
       const result = await env.AI.run(modelToRun, { messages });
 
-      if (result.error) {
+      // Debug endpoint: return raw AI response for troubleshooting
+      if (isDebug) {
         return new Response(
           JSON.stringify({
-            error: {
-              message: result.error,
-              type: 'model_error',
-            },
+            raw_result: result,
+            raw_type: typeof result,
+            extracted_content: extractContent(result),
+          }),
+          { headers: { 'Content-Type': 'application/json', ...CORS_HEADERS } }
+        );
+      }
+
+      if (result?.error) {
+        return new Response(
+          JSON.stringify({
+            error: { message: result.error, type: 'model_error' },
           }),
           {
             status: 500,
-            headers: {
-              'Content-Type': 'application/json',
-              'Access-Control-Allow-Origin': '*',
-            },
+            headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
           }
         );
       }
 
       // Build the OpenAI-compatible response
-      const responseContent = result.response || '';
+      const responseContent = extractContent(result);
       const openAIResponse = {
         id: responseId,
         object: 'chat.completion',
@@ -209,25 +244,17 @@ export default {
       };
 
       return new Response(JSON.stringify(openAIResponse), {
-        headers: {
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*',
-        },
+        headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
       });
     } catch (error) {
+      const errMsg = error instanceof Error ? error.message : 'An unexpected error occurred';
       return new Response(
         JSON.stringify({
-          error: {
-            message: 'An unexpected error occurred',
-            type: 'server_error',
-          },
+          error: { message: errMsg, type: 'server_error' },
         }),
         {
           status: 500,
-          headers: {
-            'Content-Type': 'application/json',
-            'Access-Control-Allow-Origin': '*',
-          },
+          headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
         }
       );
     }
