@@ -1,5 +1,5 @@
-name = "ai-llama-forwarder"
-compatibility_date = "2023-09-20"
+name = "openai-cf-proxy"
+compatibility_date = "2024-01-01"
 main = "src/index.tsx"
 
 [ai]

@@ -1,48 +1,86 @@
-# OpenAI to Llama 3 AI
+# OpenAI-Compatible Cloudflare AI Proxy
 
-This is example of using [Workers AI](https://developers.cloudflare.com/workers-ai/). This Cloudflare Worker provides a Base URL which allows you to make AI calls to the @cf/meta/llama-3-8b-instruct model using an OpenAI client.
+Cloudflare Worker que actúa como proxy intermedio entre la librería oficial de OpenAI y los modelos de **Workers AI** de Cloudflare. Permite usar cualquier cliente OpenAI apuntando al URL del Worker.
 
-## Usage
+## Modelo por defecto
 
-```txt
-npm install 
-npm run dev
-npm run deploy
+`@cf/nvidia/nemotron-3-120b-a12b`
+
+Puedes cambiar el modelo enviando el campo `model` en la petición. Si no se envía, usa el de arriba como fallback.
+
+## Características
+
+- ✅ Formato de respuesta 100% compatible con OpenAI (`id`, `object`, `created`, `choices`, `usage`)
+- ✅ Soporte para **streaming** (SSE)
+- ✅ Modelo dinámico — envía cualquier modelo de Workers AI válido en el campo `model`
+- ✅ CORS habilitado
+- ✅ Despliegue automático con GitHub Actions
+
+## Setup
+
+```bash
+npm install
+npm run dev      # desarrollo local (remoto)
+npm run deploy   # despliegue manual
 ```
 
-[Example (Ruby using the ruby-openai gem)](https://github.com/alexrudall/ruby-openai)
+## Despliegue automático (CI/CD)
 
-```ruby
-require 'openai'
+Este repositorio incluye un workflow de GitHub Actions (`.github/workflows/deploy.yml`).
 
-client = OpenAI::Client.new(
-  api_key: ENV['OPENAI_API_KEY'],
-  uri_base: ENV['CLOUDFLARE_WORKER_URL']
+### Configurar secretos en GitHub
+
+En tu repositorio → Settings → Secrets and variables → Actions, agrega:
+
+| Secreto | Descripción |
+|---|---|
+| `CF_API_TOKEN` | Token de API de Cloudflare con permisos de Workers |
+| `CF_ACCOUNT_ID` | ID de tu cuenta de Cloudflare |
+
+Cada `git push` a `main` o `master` desplegará automáticamente el Worker.
+
+## Uso con Python (openai)
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    api_key="dummy-key",  # Cloudflare Workers AI no requiere API key de OpenAI
+    base_url="https://openai-cf-proxy.TU_SUBDOMINIO.workers.dev"
 )
 
-response = client.chat(
-  parameters: {
-    model: 'gpt-4-turbo', #This is ignored in this example
-    messages: [
-      {
-        role: 'system', content: 'You are a helpful assistant'
-      },
-      {
-        role: 'user', content: 'What is 3 * 10?'
-      }
+# Sin streaming
+response = client.chat.completions.create(
+    model="@cf/nvidia/nemotron-3-120b-a12b",
+    messages=[
+        {"role": "system", "content": "Eres un asistente útil."},
+        {"role": "user", "content": "¿Cuánto es 3 * 10?"}
     ]
-  }
 )
+print(response.choices[0].message.content)
 
-puts response.dig('choices', 0, 'message', 'content')
+# Con streaming
+stream = client.chat.completions.create(
+    model="@cf/nvidia/nemotron-3-120b-a12b",
+    messages=[
+        {"role": "user", "content": "Cuéntame un chiste corto"}
+    ],
+    stream=True
+)
+for chunk in stream:
+    if chunk.choices[0].delta.content:
+        print(chunk.choices[0].delta.content, end="")
 ```
 
+## Modelos compatibles
 
-## Author
+Cualquier modelo disponible en [Cloudflare Workers AI](https://developers.cloudflare.com/workers-ai/models/), por ejemplo:
 
-Jack Culpan <https://github.com/jackculpan>.
+- `@cf/nvidia/nemotron-3-120b-a12b`  (default)
+- `@cf/meta/llama-3-8b-instruct`
+- `@cf/mistral/mistral-7b-instruct-v0.1`
+- `@cf/google/gemma-7b-it`
 
-## License
+## Licencia
 
 MIT
-# openai-to-cloudflare-ai
